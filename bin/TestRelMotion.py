@@ -11,16 +11,15 @@ from lib.constants import GEO_RADIUS, METERS_IN_KM, SECONDS_IN_DAY
 
 def test():
 	relmod = RelativeModel(cfgs.REL_TEST_STATE, GEO_RADIUS*METERS_IN_KM)
-	r, i, c = relmod.getPositionsOverInterval(0, SECONDS_IN_DAY)
-	plt.plot(np.array(i)/1000, np.array(r)/1000, "b-")
-	
 	relmod.stepToNextTangent()
-	burn = relmod.solveBurnToRadialWP(-45000)
-	r, i, c = relmod.getPositionsOverInterval(0, SECONDS_IN_DAY)
+	b1, b2, b3, t = relmod.solveEccentricDriftProfileToMatchState(SECONDS_IN_DAY*10)
+
+	relmod.applyVelocityChange(b1)
+	r, i, c = relmod.getPositionsOverInterval(0, int(t)+SECONDS_IN_DAY)
 	plt.plot(np.array(i)/1000, np.array(r)/1000, "r-")
 	
-	relmod.stepToNextTangent()
-	burn = relmod.solveBurnToRadialWP(-45000)
+	relmod = RelativeModel(relmod.solveNextState(t), GEO_RADIUS*METERS_IN_KM)
+	relmod.applyVelocityChange(b2)
 	r, i, c = relmod.getPositionsOverInterval(0, SECONDS_IN_DAY)
 	plt.plot(np.array(i)/1000, np.array(r)/1000, "g-")
 
