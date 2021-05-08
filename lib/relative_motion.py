@@ -1,7 +1,7 @@
 from copy import deepcopy
 import numpy as np
 from lib.constants import EARTH_MU
-from math import sqrt, sin, cos, atan, pi
+from math import sqrt, sin, cos, atan, pi, isnan
 import matplotlib.pyplot as plt
 import lib.CustomExceptions as e
 import lib.SysConfigs as cfgs
@@ -33,6 +33,7 @@ class RelativeModel():
 		self.init_state = deepcopy(t0_state)
 		
 		#Save orbital rate value internally to prevent future repetitive calculations
+		self.a = a
 		self.n = sqrt((EARTH_MU/a**3))
 	
 	def getSystemMatrix(self, t):
@@ -157,6 +158,16 @@ class RelativeModel():
 			
 		return x, y, z
 
+	def getPeriod(self):
+		"""
+		Return the number of seconds required to complete a full period
+
+		@rtype:		number
+		@return:	number of seconds for full revolution of model
+		"""
+
+		return 2*pi/self.n
+
 	def stepToNextTangent(self):
 		"""
 		Step the model forward to the next radial tangent
@@ -175,7 +186,9 @@ class RelativeModel():
 		
 		#Correct t by half period for any negative or 0 solutions
 		if t <= cfgs.ZERO_TOL: 
-			t += pi/self.n
+			t += self.getPeriod()/2
+		elif isnan(t):
+			t = self.getPeriod()/2
 		
 		#Update t0_state to reflect new tangential position
 		self.init_state = self.solveNextState(t)
@@ -201,7 +214,7 @@ class RelativeModel():
 		x_dot = self.init_state[3][0]
 		y_dot = self.init_state[4][0]
 		n = self.n
-		t = pi/self.n
+		t = self.getPeriod()/2
 		
 		#Store the numerator and denomenator separately to solve for required y_dot difference
 		#This is an algebraic solution of equation 1 in the CW matrix
@@ -218,6 +231,131 @@ class RelativeModel():
 		return result
 		
 		
+	def solveCircularDriftProfileToMatchState(self, wpTimeFromNow):
+		"""
+		Solve the four-burn sequence that creates a circular phasing altitude (two burns) relative to the desired orbit state, ingresses to a 0 waypoint (1 burn) then
+		matches velocity at the input waypoint time (1 burn).  This method should only be used when starting at an altitude tangent.  Otherwise, the assumptions used
+		to simplify the algebra will be invalid.
+
+		@type wpTimeFromNow:	number
+		@param wpTimeFromNow:	The time of the last velocity-targeting burn in seconds from now
+		@rtype:					tuple
+		@return:				The in-track burn magnitudes of each burn in the order (phasing burn 1, recirc burn, ingress burn, velocity match burn)
+		"""
+
+		#Store key constants to reduce clutter in system matrix
+		n = self.n
+		t_hp = self.getPeriod()/2
+		t_Tp = wpTimeFromNow - self.getPeriod()
+		xi = self.init_state[0][0]
+		yi = self.init_state[1][0]
+
+		#Save system matrix and solution vectors.  These are formed by using relationships of x(t) and y(t) CW equations
+		soln_vector = np.array([[7*xi, 0, 0, -6*xi*n*t_hp + yi, 0, 0, 0]]).reshape((7,1))
+		sys_mat = np.array([
+					[0, 0, 0, 1, -4/n, 0, 0],
+					[0, 0, 0, -6, 0, -4/n, 0],
+					[0, 0, 0, 1, 0, 0, -4/n],
+					[1, 0, 0, 0, 3*t_hp, 0, 0],
+					[-1, 1, 0, -6*(sin(n*t_Tp)-n*t_Tp), 0, -(4*sin(n*t_Tp) - 3*n*t_Tp)/n, 0],
+					[0, 0, 1, 0, 0, 0, -3*t_hp],
+					[0, 1, -1, 0, 0, 0, 0]
+		])
 		
+		#Find the results for [y1, y2, y3, x_phasing, y_dot1, y_dot2, y_dot3]
+		result = np.dot(np.linalg.inv(sys_mat), soln_vector)
+
+		#Burn #1 is the difference of the desired y_dot1 value and the current model y_dot value
+		burn1 = np.array([0, (result[4][0] - self.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM)
+
+		#Copy the current model to perform maneuvers and solve the remaining burns
+		phaseModel = deepcopy(self)
+
+		#Maneuver the model into the pre-circular phasing orbit
+		phaseModel.applyVelocityChange(burn1)
+
+		#Step to the next tangent to recircularize at the desired altitude
+		phaseModel.stepToNextTangent()
+
+		#Burn #2 is the difference of the desired y_dot2 value and the current phasing model y_dot value
+		burn2 = np.array([0, (result[5][0] - phaseModel.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM)
+
+		#Maneuver the model to achieve a circular phasing orbit
+		phaseModel.applyVelocityChange(burn2)
+
+		#Create an ingress model formed at a 0 waypoint
+		ingressModel = RelativeModel(np.asarray([[0,0,0,0,result[6][0], 0]]).reshape(cfgs.REL_STATE_DIM), self.a)
+
+		#Step backwards half a period to the ingress point
+		state = ingressModel.solveNextState(-ingressModel.getPeriod()/2)
+
+		#Step the phasing model forward to achieve the same position as the ingress model
+		state2 = phaseModel.solveNextState(t_Tp - t_hp)
+
+		#Burn #3 is the difference of the ingress model y_dot and the phasing model y_dot value
+		burn3 = np.array([0, state[4][0] - state2[4][0], 0]).reshape(cfgs.XYZ_DIM)
+
+		#Burn #4 is the anti-vector of the solved y_dot3 value
+		burn4 = np.array([0, -result[6][0], 0]).reshape(cfgs.XYZ_DIM)
+
+		return burn1, burn2, burn3, burn4, t_Tp
 		
+	def solveEccentricDriftProfileToMatchState(self, wpTimeFromNow):
+		"""
+		Solve the three-burn sequence that phases (1 burn), ingresses (1 burn), then matches velocity BEFORE the input waypoint time (1 burn).  This method should only 
+		be used when starting at an altitude tangent.  Otherwise, the assumptions used to simplify the algebra will be invalid.  The final burn time will be chose based on 
+		the number of full periods between now and the input waypoint time
+
+		@type wpTimeFromNow:	number
+		@param wpTimeFromNow:	The latest time of the last velocity-targeting burn in seconds from now
+		@rtype:					tuple
+		@return:				The in-track burn magnitudes of each burn in the order (phasing burn 1, recirc burn, ingress burn, velocity match burn)
+		"""
+
+		#Store key constants to reduce clutter in system matrix
+		n = self.n
+		t_hp = self.getPeriod()/2
 		
+		t_Tp = (wpTimeFromNow - (wpTimeFromNow % self.getPeriod())) - t_hp
+		xi = self.init_state[0][0]
+		yi = self.init_state[1][0]
+
+		#Save system matrix and solution vectors.  These are formed by using relationships of x(t) and y(t) CW equations
+		soln_vector = np.array([[7*xi, 0, -6*xi*n*t_hp + yi, 0, -6*xi*n*t_Tp + yi, 0]]).reshape((6,1))
+		sys_mat = np.array([
+					[0, 0, 0, 1, -4/n, 0],
+					[0, 0, 0, 1, 0, -4/n], 
+					[1, 0, 0, 0, 3*t_hp, 0],
+					[0, 1, 0, 0, 0, -3*t_hp],
+					[0, 0, 1, 0, 3*t_Tp, 0],
+					[0, -1, 1, 0, 0, 0]
+		])
+		
+		#Find the results for [y1, y2, y3, x_phasing, y_dot1, y_dot2, y_dot3]
+		result = np.dot(np.linalg.inv(sys_mat), soln_vector)
+
+		#Burn #1 is the difference of the desired y_dot1 value and the current model y_dot value
+		burn1 = np.array([0, (result[4][0] - self.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM)
+
+		#Copy the current model to perform maneuvers and solve the remaining burns
+		phaseModel = deepcopy(self)
+
+		#Maneuver the model into the phasing orbit
+		phaseModel.applyVelocityChange(burn1)
+
+		#Create an ingress model formed at a 0 waypoint
+		ingressModel = RelativeModel(np.asarray([[0,0,0,0,result[5][0], 0]]).reshape(cfgs.REL_STATE_DIM), self.a)
+
+		#Step backwards half a period to the ingress point
+		state = ingressModel.solveNextState(-ingressModel.getPeriod()/2)
+
+		#Step the phasing model forward to achieve the same position as the ingress model
+		state2 = phaseModel.solveNextState(t_Tp)
+
+		#Burn #2 is the difference of the ingress model y_dot and the phasing model y_dot value
+		burn2 = np.array([0, state[4][0] - state2[4][0], 0]).reshape(cfgs.XYZ_DIM)
+
+		#Burn #3 is the anti-vector of the solved y_dot3 value
+		burn3 = np.array([0, -result[5][0], 0]).reshape(cfgs.XYZ_DIM)
+
+		return burn1, burn2, burn3, t_Tp	
