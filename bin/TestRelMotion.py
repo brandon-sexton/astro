@@ -14,12 +14,12 @@ def test():
 	relmod.stepToNextTangent()
 	b1, b2, b3, t = relmod.solveEccentricDriftProfileToMatchState(SECONDS_IN_DAY*10)
 
-	relmod.applyVelocityChange(b1)
+	relmod.applyVelocityChange(b1.getBurnArray())
 	r, i, c = relmod.getPositionsOverInterval(0, int(t)+SECONDS_IN_DAY)
 	plt.plot(np.array(i)/1000, np.array(r)/1000, "r-")
 	
 	relmod = RelativeModel(relmod.solveNextState(t), GEO_RADIUS*METERS_IN_KM)
-	relmod.applyVelocityChange(b2)
+	relmod.applyVelocityChange(b2.getBurnArray())
 	r, i, c = relmod.getPositionsOverInterval(0, SECONDS_IN_DAY)
 	plt.plot(np.array(i)/1000, np.array(r)/1000, "g-")
 

@@ -266,22 +266,22 @@ class RelativeModel():
 		result = np.dot(np.linalg.inv(sys_mat), soln_vector)
 
 		#Burn #1 is the difference of the desired y_dot1 value and the current model y_dot value
-		burn1 = np.array([0, (result[4][0] - self.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM)
+		burn1 = RelativeBurn(np.array([0, (result[4][0] - self.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM))
 
 		#Copy the current model to perform maneuvers and solve the remaining burns
 		phaseModel = deepcopy(self)
 
 		#Maneuver the model into the pre-circular phasing orbit
-		phaseModel.applyVelocityChange(burn1)
+		phaseModel.applyVelocityChange(burn1.getBurnArray())
 
 		#Step to the next tangent to recircularize at the desired altitude
 		phaseModel.stepToNextTangent()
 
 		#Burn #2 is the difference of the desired y_dot2 value and the current phasing model y_dot value
-		burn2 = np.array([0, (result[5][0] - phaseModel.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM)
+		burn2 = RelativeBurn(np.array([0, (result[5][0] - phaseModel.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM))
 
 		#Maneuver the model to achieve a circular phasing orbit
-		phaseModel.applyVelocityChange(burn2)
+		phaseModel.applyVelocityChange(burn2.getBurnArray())
 
 		#Create an ingress model formed at a 0 waypoint
 		ingressModel = RelativeModel(np.asarray([[0,0,0,0,result[6][0], 0]]).reshape(cfgs.REL_STATE_DIM), self.a)
@@ -293,10 +293,10 @@ class RelativeModel():
 		state2 = phaseModel.solveNextState(t_Tp - t_hp)
 
 		#Burn #3 is the difference of the ingress model y_dot and the phasing model y_dot value
-		burn3 = np.array([0, state[4][0] - state2[4][0], 0]).reshape(cfgs.XYZ_DIM)
+		burn3 = RelativeBurn(np.array([0, state[4][0] - state2[4][0], 0]).reshape(cfgs.XYZ_DIM))
 
 		#Burn #4 is the anti-vector of the solved y_dot3 value
-		burn4 = np.array([0, -result[6][0], 0]).reshape(cfgs.XYZ_DIM)
+		burn4 = RelativeBurn(np.array([0, -result[6][0], 0]).reshape(cfgs.XYZ_DIM))
 
 		return burn1, burn2, burn3, burn4, t_Tp
 		
@@ -335,13 +335,13 @@ class RelativeModel():
 		result = np.dot(np.linalg.inv(sys_mat), soln_vector)
 
 		#Burn #1 is the difference of the desired y_dot1 value and the current model y_dot value
-		burn1 = np.array([0, (result[4][0] - self.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM)
+		burn1 = RelativeBurn(np.array([0, (result[4][0] - self.init_state[4][0]), 0]).reshape(cfgs.XYZ_DIM))
 
 		#Copy the current model to perform maneuvers and solve the remaining burns
 		phaseModel = deepcopy(self)
 
 		#Maneuver the model into the phasing orbit
-		phaseModel.applyVelocityChange(burn1)
+		phaseModel.applyVelocityChange(burn1.getBurnArray())
 
 		#Create an ingress model formed at a 0 waypoint
 		ingressModel = RelativeModel(np.asarray([[0,0,0,0,result[5][0], 0]]).reshape(cfgs.REL_STATE_DIM), self.a)
@@ -353,9 +353,61 @@ class RelativeModel():
 		state2 = phaseModel.solveNextState(t_Tp)
 
 		#Burn #2 is the difference of the ingress model y_dot and the phasing model y_dot value
-		burn2 = np.array([0, state[4][0] - state2[4][0], 0]).reshape(cfgs.XYZ_DIM)
+		burn2 = RelativeBurn(np.array([0, state[4][0] - state2[4][0], 0]).reshape(cfgs.XYZ_DIM))
 
 		#Burn #3 is the anti-vector of the solved y_dot3 value
-		burn3 = np.array([0, -result[5][0], 0]).reshape(cfgs.XYZ_DIM)
+		burn3 = RelativeBurn(np.array([0, -result[5][0], 0]).reshape(cfgs.XYZ_DIM))
 
 		return burn1, burn2, burn3, t_Tp	
+
+class RelativeBurn:
+	"""
+	This class holds the x, y, z components of a velocity change relative to a spacecraft.
+	"""
+	def __init__(self, burnArray):
+		"""
+		Stores a burn array for convenient calling of magnitudes
+		
+		@type burnArray:  	numpy array of dimensions (3, 1)
+		@param burnArray: 	[x_dot, y_dot, z_dot] in meters per second respectively.  
+                    
+		@rtype:         	None
+		@return:        	N/A
+		"""
+		self.burnArray = deepcopy(burnArray)
+
+	def getRadialVelocity(self):
+		"""
+		Gets the radial (x) component of the burn object
+                    
+		@rtype:         	number
+		@return:        	x component of the burn array
+		"""
+		return self.burnArray[0][0]
+
+	def getInTrackVelocity(self):
+		"""
+		Gets the in-track (y) component of the burn object
+                    
+		@rtype:         	number
+		@return:        	y component of the burn array
+		"""
+		return self.burnArray[1][0]
+
+	def getCrossTrackVelocity(self):
+		"""
+		Gets the cross-track (z) component of the burn object
+                    
+		@rtype:         	number
+		@return:        	z component of the burn array
+		"""
+		return self.burnArray[2][0]
+
+	def getBurnArray(self):
+		"""
+		Gets the array holding all burn compenents
+                    
+		@rtype:         	numpy array of dimensions (3, 1)
+		@return:        	burn array of x,y,z components
+		"""
+		return self.burnArray
